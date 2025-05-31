@@ -22,6 +22,8 @@ import (
 	"io"
 	"time"
 
+	profiler "github.com/apache/skywalking-go/plugins/core/reporter/profiler"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/connectivity"
@@ -31,6 +33,7 @@ import (
 
 	configuration "skywalking.apache.org/repo/goapi/collect/agent/configuration/v3"
 	agentv3 "skywalking.apache.org/repo/goapi/collect/language/agent/v3"
+	profilev3 "skywalking.apache.org/repo/goapi/collect/language/profile/v3"
 	logv3 "skywalking.apache.org/repo/goapi/collect/logging/v3"
 	managementv3 "skywalking.apache.org/repo/goapi/collect/management/v3"
 
@@ -39,9 +42,10 @@ import (
 )
 
 const (
-	maxSendQueueSize     int32 = 30000
-	defaultCheckInterval       = 20 * time.Second
-	defaultCDSInterval         = 20 * time.Second
+	maxSendQueueSize       int32 = 30000
+	defaultCheckInterval         = 20 * time.Second
+	defaultCDSInterval           = 20 * time.Second
+	defaultProfileInterval       = 20 * time.Second
 )
 
 // NewGRPCReporter create a new reporter to send data to gRPC oap server. Only one backend address is allowed.
@@ -52,7 +56,8 @@ func NewGRPCReporter(logger operator.LogOperator, serverAddr string, opts ...Rep
 		metricsSendCh:    make(chan []*agentv3.MeterData, maxSendQueueSize),
 		logSendCh:        make(chan *logv3.LogData, maxSendQueueSize),
 		checkInterval:    defaultCheckInterval,
-		cdsInterval:      defaultCDSInterval, // cds default on
+		cdsInterval:      defaultCDSInterval,     // cds default on
+		profileInterval:  defaultProfileInterval, // profile default on
 		connectionStatus: reporter.ConnectionStatusConnected,
 	}
 	for _, o := range opts {
@@ -107,6 +112,12 @@ type gRPCReporter struct {
 	cdsService       *reporter.ConfigDiscoveryService
 	cdsClient        configuration.ConfigurationDiscoveryServiceClient
 
+	// profiler
+	profileClient      profilev3.ProfileTaskClient
+	profileTaskService *profiler.ProfileTaskService
+	profileInterval    time.Duration
+	profileFilePath    string
+
 	md    metadata.MD
 	creds credentials.TransportCredentials
 
@@ -120,6 +131,7 @@ func (r *gRPCReporter) Boot(entity *reporter.Entity, cdsWatchers []reporter.Agen
 	r.initSendPipeline()
 	r.check()
 	r.initCDS(cdsWatchers)
+	r.initProfile()
 	r.bootFlag = true
 }
 
@@ -511,6 +523,40 @@ func (r *gRPCReporter) check() {
 				r.logger.Errorf("send keep alive signal error %v", err)
 			}
 			time.Sleep(r.checkInterval)
+		}
+	}()
+}
+
+func (r *gRPCReporter) initProfile() {
+	go func() {
+		for {
+			switch r.updateConnectionStatus() {
+			case reporter.ConnectionStatusShutdown:
+				break
+			case reporter.ConnectionStatusDisconnect:
+				time.Sleep(r.profileInterval)
+				continue
+			}
+
+			profileCommand, err := r.profileClient.GetProfileTaskCommands(context.Background(), &profilev3.ProfileTaskCommandQuery{
+				Service:         r.entity.ServiceName,
+				ServiceInstance: r.entity.ServiceInstanceName,
+				LastCommandTime: r.profileTaskService.LastUpdateTime,
+			})
+
+			if err != nil {
+				r.logger.Errorf("fetch dynamic configuration error %v", err)
+				time.Sleep(r.profileInterval)
+				continue
+			}
+
+			commandName := profiler.ProfileTaskCommandName
+			if len(profileCommand.GetCommands()) > 0 && profileCommand.GetCommands()[0].Command == commandName {
+				rawCommand := profileCommand.GetCommands()[0]
+				r.profileTaskService.HandleCommand(rawCommand)
+			}
+
+			time.Sleep(r.profileInterval)
 		}
 	}()
 }

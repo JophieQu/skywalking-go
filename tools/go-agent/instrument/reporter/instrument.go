@@ -94,6 +94,30 @@ func (i *GRPCInstrument) WriteExtraFiles(dir string) ([]string, error) {
 			pkgUpdates[key] = val
 		}
 		tools.ChangePackageImportPath(file, pkgUpdates)
+		tools.DeletePackageImports(file, "github.com/apache/skywalking-go/plugins/core/reporter", "github.com/apache/skywalking-go/plugins/core/reporter/profiler")
+	})
+	if err != nil {
+		return nil, err
+	}
+	results = append(results, copiedFiles...)
+
+	// copy command file
+	reporterDirName = strings.ReplaceAll(filepath.Join("reporter", "profiler"), `\`, `/`)
+	copiedFiles, err = tools.CopyGoFiles(core.FS, reporterDirName, dir, func(entry fs.DirEntry, f *dst.File) (*tools.DebugInfo, error) {
+		if i.compileOpts.DebugDir == "" {
+			return nil, nil
+		}
+		debugPath := filepath.Join(i.compileOpts.DebugDir, "plugins", "core", reporterDirName, entry.Name())
+		return tools.BuildDSTDebugInfo(debugPath, f)
+	}, func(file *dst.File) {
+		file.Name = dst.NewIdent("reporter")
+		pkgUpdates := make(map[string]string)
+		for _, p := range agentcore.CopiedSubPackages {
+			key := strings.ReplaceAll(filepath.Join(agentcore.EnhanceFromBasePackage, p), `\`, `/`)
+			val := strings.ReplaceAll(filepath.Join(agentcore.EnhanceBasePackage, p), `\`, `/`)
+			pkgUpdates[key] = val
+		}
+		tools.ChangePackageImportPath(file, pkgUpdates)
 		tools.DeletePackageImports(file, "github.com/apache/skywalking-go/plugins/core/reporter")
 	})
 	if err != nil {
