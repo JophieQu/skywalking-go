@@ -63,6 +63,9 @@ reporter:
       client_cert_chain_path: ${SW_AGENT_REPORTER_GRPC_TLS_CLIENT_CERT_CHAIN_PATH:}
       # Controls whether a client verifies the server's certificate chain and host name.
       insecure_skip_verify: ${SW_AGENT_REPORTER_GRPC_TLS_INSECURE_SKIP_VERIFY:false}
+    profile:
+      task_fetch_interval: ${SW_AGENT_REPORTER_GRPC_PROFILE_TASK_FETCH_INTERVAL:20}
+      file_path: ${SW_AGENT_REPORTER_GRPC_PROFILE_FILE_PATH:}
 
 log:
   # The type determines which logging type is currently used by the system.

@@ -74,7 +74,7 @@ func WithCDS(interval time.Duration) ReporterOption {
 	}
 }
 
-//nolint
+// nolint
 func generateTLSCredential(caPath, clientKeyPath, clientCertChainPath string, skipVerify bool) (tc credentials.TransportCredentials, tlsErr error) {
 	if err := checkTLSFile(caPath); err != nil {
 		return nil, err
@@ -122,4 +122,18 @@ func checkTLSFile(path string) error {
 		return fmt.Errorf("the TLS file is illegal: %s", path)
 	}
 	return nil
+}
+
+// WithProfilerInterval setup profiler collection interval
+func WithProfilerInterval(interval time.Duration) ReporterOption {
+	return func(r *gRPCReporter) {
+		r.profileInterval = interval
+	}
+}
+
+// WithProfilerFilePath setup profiler file path
+func WithProfilerFilePath(filePath string) ReporterOption {
+	return func(r *gRPCReporter) {
+		r.profileFilePath = filePath
+	}
 }

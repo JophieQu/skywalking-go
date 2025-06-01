@@ -90,10 +90,10 @@ func deserializeProfileTaskCommand(command *commonv3.Command) *ProfileTaskComman
 	taskId := ""
 	serialNumber := ""
 	endpointName := ""
-	profileType := ""
+	profileType := ProfileTypeCPU
 	duration := 0
 	minDurationThreshold := 0
-	dumpPeriod := 0
+	dumpPeriod := 100
 	maxSamplingCount := 0
 	var startTime int64 = 0
 	var createTime int64 = 0
@@ -107,11 +107,15 @@ func deserializeProfileTaskCommand(command *commonv3.Command) *ProfileTaskComman
 		} else if pair.GetKey() == "ProfileType" {
 			profileType = pair.GetValue()
 		} else if pair.GetKey() == "Duration" {
-			duration, _ = strconv.Atoi(pair.GetValue())
+			if val, err := strconv.Atoi(pair.GetValue()); err == nil && val > 0 {
+				duration = val
+			}
 		} else if pair.GetKey() == "MinDurationThreshold" {
 			minDurationThreshold, _ = strconv.Atoi(pair.GetValue())
 		} else if pair.GetKey() == "DumpPeriod" {
-			dumpPeriod, _ = strconv.Atoi(pair.GetValue())
+			if val, err := strconv.Atoi(pair.GetValue()); err == nil && val > 0 {
+				dumpPeriod = val
+			}
 		} else if pair.GetKey() == "MaxSamplingCount" {
 			maxSamplingCount, _ = strconv.Atoi(pair.GetValue())
 		} else if pair.GetKey() == "StartTime" {

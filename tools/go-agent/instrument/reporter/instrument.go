@@ -158,6 +158,9 @@ func {{.InitFuncName}}(logger operator.LogOperator) (Reporter, error) {
 	opts = append(opts, WithAuthentication({{.Config.Reporter.GRPC.Authentication.ToGoStringValue}}))
 	cdsFetchIntervalVal := {{.Config.Reporter.GRPC.CDSFetchInterval.ToGoIntValue "the GRPC reporter max queue size must be number"}}
 	opts = append(opts, WithCDS(time.Second * time.Duration(cdsFetchIntervalVal)))
+	profilerIntervalVal := {{.Config.Reporter.GRPC.Profiler.Interval.ToGoIntValue "the GRPC reporter profiler task fetch interval must be number"}}
+	opts = append(opts, WithProfilerInterval(time.Second * time.Duration(profilerIntervalVal)))
+	opts = append(opts, WithProfilerFilePath({{.Config.Reporter.GRPC.Profiler.FilePath.ToGoStringValue}}))
 
 	if {{.Config.Reporter.GRPC.TLS.Enable.ToGoBoolValue}} {
 		tc, err := generateTLSCredential({{.Config.Reporter.GRPC.TLS.CAPath.ToGoStringValue}}, 

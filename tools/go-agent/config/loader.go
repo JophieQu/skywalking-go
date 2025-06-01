@@ -86,6 +86,12 @@ type GRPCReporter struct {
 	Authentication   StringValue     `yaml:"authentication"`
 	CDSFetchInterval StringValue     `yaml:"cds_fetch_interval"`
 	TLS              GRPCReporterTLS `yaml:"tls"`
+	Profile          Profile         `yaml:"profile"`
+}
+
+type Profile struct {
+	TaskFetchInterval StringValue `yaml:"task_fetch_interval"`
+	FilePath          StringValue `yaml:"file_path"`
 }
 
 type GRPCReporterTLS struct {
