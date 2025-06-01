@@ -528,6 +528,10 @@ func (r *gRPCReporter) check() {
 }
 
 func (r *gRPCReporter) initProfile() {
+	if r.profileClient == nil {
+		return
+	}
+	r.profileTaskService = profiler.NewProfileTaskService(r.logger, r.profileFilePath)
 	go func() {
 		for {
 			switch r.updateConnectionStatus() {

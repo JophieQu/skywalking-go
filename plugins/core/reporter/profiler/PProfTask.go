@@ -56,10 +56,10 @@ type ProfileTaskCommand struct {
 	createTime int64
 	// unit is hz
 	dumpPeriod int
-
-	// cannot use
+	// Minimum duration threshold for profiling in milliseconds
 	minDurationThreshold int
-	maxSamplingCount     int
+	// Maximum number of samples that can be collected
+	maxSamplingCount int
 }
 
 func (c *ProfileTaskCommand) CheckCommand() error {
@@ -170,18 +170,31 @@ func (service *ProfileTaskService) HandleCommand(rawCommand *commonv3.Command) e
 	service.taskInfo[command.taskId] = command
 
 	startTime := time.Duration(command.startTime-time.Now().UnixMilli()) * time.Millisecond
-	time.AfterFunc(startTime, func() {
-		stopTime := command.duration
-		_, err := service.startTask(command)
-		if err != nil {
-			service.logger.Errorf("start pprof error %v \n", err)
-			return
-		}
-		time.AfterFunc(stopTime, func() {
+
+	// The CPU sampling lasts for a duration and then stops
+	if command.profileType == ProfileTypeCPU {
+		time.AfterFunc(startTime, func() {
+			_, err := service.startTask(command)
+			if err != nil {
+				service.logger.Errorf("start CPU pprof error %v \n", err)
+				return
+			}
+			time.AfterFunc(command.duration, func() {
+				service.stopTask(command.taskId, command.profileType)
+			})
+		})
+	} else {
+		// direct sampling of Memory, Block, and Mutex types
+		time.AfterFunc(startTime, func() {
+			_, err := service.startTask(command)
+			if err != nil {
+				service.logger.Errorf("start %s pprof error %v \n", command.profileType, err)
+				return
+			}
 			service.stopTask(command.taskId, command.profileType)
 		})
+	}
 
-	})
 	return nil
 }
 
@@ -209,6 +222,7 @@ func (service *ProfileTaskService) startTask(command *ProfileTaskCommand) (*os.F
 			delete(service.activeProfileFiles, command.taskId)
 			return nil, err
 		}
+		service.logger.Infof("CPU profiling task started for %s", command.taskId)
 	case ProfileTypeMemory:
 		service.logger.Infof("Memory profiling task started for %s", command.taskId)
 	case ProfileTypeBlock:
@@ -257,13 +271,13 @@ func (service *ProfileTaskService) stopTask(taskId string, profileType string) {
 			service.logger.Errorf("close CPU profile file error %v \n", err)
 		}
 	case ProfileTypeMemory:
+		runtime.GC()
 		if err := pprof.WriteHeapProfile(file); err != nil {
 			service.logger.Errorf("write memory profile error %v \n", err)
 		}
 		if err := file.Close(); err != nil {
 			service.logger.Errorf("close memory profile file error %v \n", err)
 		}
-		runtime.GC()
 	case ProfileTypeBlock:
 		profile := pprof.Lookup("block")
 		if profile != nil {
@@ -291,6 +305,7 @@ func (service *ProfileTaskService) stopTask(taskId string, profileType string) {
 		if err := file.Close(); err != nil {
 			service.logger.Errorf("close profile file error %v \n", err)
 		}
+		return
 	}
 
 	service.logger.Infof("Profile task completed for taskId: %s, type: %s", taskId, profileType)
