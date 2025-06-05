@@ -531,7 +531,7 @@ func (r *gRPCReporter) initProfile() {
 	if r.profileClient == nil {
 		return
 	}
-	r.profileTaskService = profiler.NewProfileTaskService(r.logger, r.profileFilePath)
+	r.profileTaskService = profiler.NewProfileTaskService(r.logger, r.entity, r.profileFilePath)
 	go func() {
 		for {
 			switch r.updateConnectionStatus() {

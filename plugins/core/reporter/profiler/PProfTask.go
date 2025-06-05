@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/apache/skywalking-go/plugins/core/operator"
+	"github.com/apache/skywalking-go/plugins/core/reporter"
 	commonv3 "skywalking.apache.org/repo/goapi/collect/common/v3"
+	profilev3 "skywalking.apache.org/repo/goapi/collect/language/profile/v3"
 )
 
 const (
@@ -144,20 +146,20 @@ func deserializeProfileTaskCommand(command *commonv3.Command) *ProfileTaskComman
 
 type ProfileTaskService struct {
 	logger operator.LogOperator
+	entity *reporter.Entity
 
 	pprofFilePath  string
 	LastUpdateTime int64
 
-	taskInfo           map[string]*ProfileTaskCommand
 	activeProfileFiles map[string]*os.File
 }
 
-func NewProfileTaskService(logger operator.LogOperator, profileFilePath string) *ProfileTaskService {
+func NewProfileTaskService(logger operator.LogOperator, entity *reporter.Entity, profileFilePath string) *ProfileTaskService {
 	return &ProfileTaskService{
 		logger:             logger,
+		entity:             entity,
 		pprofFilePath:      profileFilePath,
 		activeProfileFiles: make(map[string]*os.File),
-		taskInfo:           make(map[string]*ProfileTaskCommand),
 	}
 }
 
@@ -170,8 +172,6 @@ func (service *ProfileTaskService) HandleCommand(rawCommand *commonv3.Command) e
 		service.logger.Errorf("check command error, cannot process this profile task. reason %v", err)
 		return err
 	}
-
-	service.taskInfo[command.taskId] = command
 
 	startTime := time.Duration(command.startTime-time.Now().UnixMilli()) * time.Millisecond
 
@@ -267,6 +267,7 @@ func (service *ProfileTaskService) stopTask(taskId string, profileType string) {
 	}
 
 	delete(service.activeProfileFiles, taskId)
+	filePath := file.Name()
 
 	switch profileType {
 	case ProfileTypeCPU:
@@ -313,9 +314,28 @@ func (service *ProfileTaskService) stopTask(taskId string, profileType string) {
 	}
 
 	service.logger.Infof("Profile task completed for taskId: %s, type: %s", taskId, profileType)
+
+	service.readPprofData(taskId, profileType, filePath)
 }
 
-func (service *ProfileTaskService) GetTaskInfo(taskId string) (*ProfileTaskCommand, bool) {
-	task, exists := service.taskInfo[taskId]
-	return task, exists
+func (service *ProfileTaskService) readPprofData(taskId, profileType, filePath string) {
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		service.logger.Errorf("read pprof file error: %v", err)
+		return
+	}
+	// nolint:unparam
+	pprofData := &profilev3.PprofData{
+		PprofMetaData: &profilev3.PprofMetaData{
+			Service:         service.entity.ServiceName,
+			ServiceInstance: service.entity.ServiceInstanceName,
+			TaskId:          taskId,
+			Status:          profilev3.PprofExecutionStatus_PROFILING_SUCCESS,
+			ContentSize:     int32(len(content)),
+		},
+		Result: &profilev3.PprofData_Content{
+			Content: content,
+		},
+	}
+
 }
