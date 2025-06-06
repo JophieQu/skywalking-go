@@ -33,7 +33,8 @@ import (
 
 	configuration "skywalking.apache.org/repo/goapi/collect/agent/configuration/v3"
 	agentv3 "skywalking.apache.org/repo/goapi/collect/language/agent/v3"
-	profilev3 "skywalking.apache.org/repo/goapi/collect/language/profile/v3"
+	pprofv10 "skywalking.apache.org/repo/goapi/collect/language/pprof/v10"
+
 	logv3 "skywalking.apache.org/repo/goapi/collect/logging/v3"
 	managementv3 "skywalking.apache.org/repo/goapi/collect/management/v3"
 
@@ -57,7 +58,7 @@ func NewGRPCReporter(logger operator.LogOperator, serverAddr string, opts ...Rep
 		logSendCh:        make(chan *logv3.LogData, maxSendQueueSize),
 		checkInterval:    defaultCheckInterval,
 		cdsInterval:      defaultCDSInterval,     // cds default on
-		profileInterval:  defaultProfileInterval, // profile default on
+		pprofInterval:    defaultProfileInterval, // pprof default on
 		connectionStatus: reporter.ConnectionStatusConnected,
 	}
 	for _, o := range opts {
@@ -112,11 +113,11 @@ type gRPCReporter struct {
 	cdsService       *reporter.ConfigDiscoveryService
 	cdsClient        configuration.ConfigurationDiscoveryServiceClient
 
-	// profiler
-	profileClient      profilev3.ProfileTaskClient
-	profileTaskService *profiler.ProfileTaskService
-	profileInterval    time.Duration
-	profileFilePath    string
+	// pprof
+	pprofClient      pprofv10.PprofTaskClient
+	pprofTaskService *profiler.PprofTaskService
+	pprofInterval    time.Duration
+	pprofFilePath    string
 
 	md    metadata.MD
 	creds credentials.TransportCredentials
@@ -131,7 +132,7 @@ func (r *gRPCReporter) Boot(entity *reporter.Entity, cdsWatchers []reporter.Agen
 	r.initSendPipeline()
 	r.check()
 	r.initCDS(cdsWatchers)
-	r.initProfile()
+	r.initPprofTask()
 	r.bootFlag = true
 }
 
@@ -527,40 +528,40 @@ func (r *gRPCReporter) check() {
 	}()
 }
 
-func (r *gRPCReporter) initProfile() {
-	if r.profileClient == nil {
+func (r *gRPCReporter) initPprofTask() {
+	if r.pprofClient == nil {
 		return
 	}
-	r.profileTaskService = profiler.NewProfileTaskService(r.logger, r.entity, r.profileFilePath)
+	r.pprofTaskService = profiler.NewPprofTaskService(r.logger, r.entity, r.pprofFilePath)
 	go func() {
 		for {
 			switch r.updateConnectionStatus() {
 			case reporter.ConnectionStatusShutdown:
 				break
 			case reporter.ConnectionStatusDisconnect:
-				time.Sleep(r.profileInterval)
+				time.Sleep(r.pprofInterval)
 				continue
 			}
 
-			profileCommand, err := r.profileClient.GetProfileTaskCommands(context.Background(), &profilev3.ProfileTaskCommandQuery{
+			profileCommand, err := r.pprofClient.GetPprofTaskCommands(context.Background(), &pprofv10.PprofTaskCommandQuery{
 				Service:         r.entity.ServiceName,
 				ServiceInstance: r.entity.ServiceInstanceName,
-				LastCommandTime: r.profileTaskService.LastUpdateTime,
+				LastCommandTime: r.pprofTaskService.LastUpdateTime,
 			})
 
 			if err != nil {
 				r.logger.Errorf("fetch dynamic configuration error %v", err)
-				time.Sleep(r.profileInterval)
+				time.Sleep(r.pprofInterval)
 				continue
 			}
 
-			commandName := profiler.ProfileTaskCommandName
+			commandName := profiler.PprofTaskCommandName
 			if len(profileCommand.GetCommands()) > 0 && profileCommand.GetCommands()[0].Command == commandName {
 				rawCommand := profileCommand.GetCommands()[0]
-				r.profileTaskService.HandleCommand(rawCommand)
+				r.pprofTaskService.HandleCommand(rawCommand)
 			}
 
-			time.Sleep(r.profileInterval)
+			time.Sleep(r.pprofInterval)
 		}
 	}()
 }

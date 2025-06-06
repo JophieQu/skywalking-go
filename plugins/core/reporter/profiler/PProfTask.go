@@ -12,12 +12,12 @@ import (
 	"github.com/apache/skywalking-go/plugins/core/operator"
 	"github.com/apache/skywalking-go/plugins/core/reporter"
 	commonv3 "skywalking.apache.org/repo/goapi/collect/common/v3"
-	profilev3 "skywalking.apache.org/repo/goapi/collect/language/profile/v3"
+	pprofv10 "skywalking.apache.org/repo/goapi/collect/language/pprof/v10"
 )
 
 const (
-	// Name of the profile task query command
-	ProfileTaskCommandName = "ProfileTaskQuery"
+	// Name of the pprof task query command
+	PprofTaskCommandName = "PprofTaskQuery"
 	// TaskDurationMinMinute Monitor duration must greater than 1 minutes
 	TaskDurationMinMinute = 1 * time.Minute
 	// TaskDurationMaxMinute The duration of the monitoring task cannot be greater than 15 minutes
@@ -26,29 +26,27 @@ const (
 	TaskDumpPeriodMaxRate = 100
 )
 
-// Profile types
+// Pprof types
 const (
-	ProfileTypeCPU    = "CPU"
-	ProfileTypeMemory = "MEMORY"
-	ProfileTypeBlock  = "BLOCK"
-	ProfileTypeMutex  = "MUTEX"
+	PprofTypeCPU    = "CPU"
+	PprofTypeMemory = "MEMORY"
+	PprofTypeBlock  = "BLOCK"
+	PprofTypeMutex  = "MUTEX"
 )
 
-// Profile file names
+// Pprof file names
 const (
-	CPUProfileFileName    = "cpu.pprof"
-	MemoryProfileFileName = "memory.pprof"
-	BlockProfileFileName  = "block.pprof"
-	MutexProfileFileName  = "mutex.pprof"
+	CPUPprofFileName    = "cpu.pprof"
+	MemoryPprofFileName = "memory.pprof"
+	BlockPprofFileName  = "block.pprof"
+	MutexPprofFileName  = "mutex.pprof"
 )
 
-type ProfileTaskCommand struct {
+type PprofTaskCommand struct {
 	BaseCommand
 	// Task ID uniquely identifies a profiling task
 	taskId string
-	// Name of the endpoint being profiled
-	endpointName string
-	// Type of profiling (CPU/Memory/Block/Mutex)
+	// Type of profiling (CPU/Alloc/Block/Mutex)
 	profileType string
 	// unit is minute
 	duration time.Duration
@@ -58,21 +56,14 @@ type ProfileTaskCommand struct {
 	createTime int64
 	// unit is hz
 	dumpPeriod int
-	// Minimum duration threshold for profiling in milliseconds
-	minDurationThreshold int
-	// Maximum number of samples that can be collected
-	maxSamplingCount int
 }
 
-func (c *ProfileTaskCommand) CheckCommand() error {
-	if c.endpointName == "" {
-		return fmt.Errorf("endpoint name cannot be empty")
-	}
+func (c *PprofTaskCommand) CheckCommand() error {
 	if c.profileType == "" {
-		c.profileType = ProfileTypeCPU
+		c.profileType = PprofTypeCPU
 	}
-	if c.profileType != ProfileTypeCPU && c.profileType != ProfileTypeMemory &&
-		c.profileType != ProfileTypeBlock && c.profileType != ProfileTypeMutex {
+	if c.profileType != PprofTypeCPU && c.profileType != PprofTypeMemory &&
+		c.profileType != PprofTypeBlock && c.profileType != PprofTypeMutex {
 		return fmt.Errorf("unsupported profile type: %s", c.profileType)
 	}
 	if c.duration < TaskDurationMinMinute {
@@ -87,39 +78,30 @@ func (c *ProfileTaskCommand) CheckCommand() error {
 	return nil
 }
 
-func deserializeProfileTaskCommand(command *commonv3.Command) *ProfileTaskCommand {
+func deserializePprofTaskCommand(command *commonv3.Command) *PprofTaskCommand {
 	args := command.Args
 	taskId := ""
 	serialNumber := ""
-	endpointName := ""
-	profileType := ProfileTypeCPU
+	profileType := PprofTypeCPU
 	duration := 0
-	minDurationThreshold := 0
 	dumpPeriod := 100
-	maxSamplingCount := 0
 	var startTime int64 = 0
 	var createTime int64 = 0
 	for _, pair := range args {
 		if pair.GetKey() == "SerialNumber" {
 			serialNumber = pair.GetValue()
-		} else if pair.GetKey() == "EndpointName" {
-			endpointName = pair.GetValue()
 		} else if pair.GetKey() == "TaskId" {
 			taskId = pair.GetValue()
-		} else if pair.GetKey() == "ProfileType" {
+		} else if pair.GetKey() == "PprofType" {
 			profileType = pair.GetValue()
 		} else if pair.GetKey() == "Duration" {
 			if val, err := strconv.Atoi(pair.GetValue()); err == nil && val > 0 {
 				duration = val
 			}
-		} else if pair.GetKey() == "MinDurationThreshold" {
-			minDurationThreshold, _ = strconv.Atoi(pair.GetValue())
 		} else if pair.GetKey() == "DumpPeriod" {
 			if val, err := strconv.Atoi(pair.GetValue()); err == nil && val > 0 {
 				dumpPeriod = val
 			}
-		} else if pair.GetKey() == "MaxSamplingCount" {
-			maxSamplingCount, _ = strconv.Atoi(pair.GetValue())
 		} else if pair.GetKey() == "StartTime" {
 			startTime, _ = strconv.ParseInt(pair.GetValue(), 10, 64)
 		} else if pair.GetKey() == "CreateTime" {
@@ -127,44 +109,41 @@ func deserializeProfileTaskCommand(command *commonv3.Command) *ProfileTaskComman
 		}
 	}
 
-	return &ProfileTaskCommand{
+	return &PprofTaskCommand{
 		BaseCommand: BaseCommand{
 			SerialNumber: serialNumber,
-			Command:      ProfileTaskCommandName,
+			Command:      PprofTaskCommandName,
 		},
-		taskId:               taskId,
-		endpointName:         endpointName,
-		profileType:          profileType,
-		duration:             time.Duration(duration) * time.Minute,
-		minDurationThreshold: minDurationThreshold,
-		dumpPeriod:           1000 / dumpPeriod,
-		maxSamplingCount:     maxSamplingCount,
-		startTime:            startTime,
-		createTime:           createTime,
+		taskId:      taskId,
+		profileType: profileType,
+		duration:    time.Duration(duration) * time.Minute,
+		dumpPeriod:  1000 / dumpPeriod,
+		startTime:   startTime,
+		createTime:  createTime,
 	}
 }
 
-type ProfileTaskService struct {
+type PprofTaskService struct {
 	logger operator.LogOperator
 	entity *reporter.Entity
 
 	pprofFilePath  string
 	LastUpdateTime int64
 
-	activeProfileFiles map[string]*os.File
+	activePprofFiles map[string]*os.File
 }
 
-func NewProfileTaskService(logger operator.LogOperator, entity *reporter.Entity, profileFilePath string) *ProfileTaskService {
-	return &ProfileTaskService{
-		logger:             logger,
-		entity:             entity,
-		pprofFilePath:      profileFilePath,
-		activeProfileFiles: make(map[string]*os.File),
+func NewPprofTaskService(logger operator.LogOperator, entity *reporter.Entity, profileFilePath string) *PprofTaskService {
+	return &PprofTaskService{
+		logger:           logger,
+		entity:           entity,
+		pprofFilePath:    profileFilePath,
+		activePprofFiles: make(map[string]*os.File),
 	}
 }
 
-func (service *ProfileTaskService) HandleCommand(rawCommand *commonv3.Command) error {
-	command := deserializeProfileTaskCommand(rawCommand)
+func (service *PprofTaskService) HandleCommand(rawCommand *commonv3.Command) error {
+	command := deserializePprofTaskCommand(rawCommand)
 	if command.createTime > service.LastUpdateTime {
 		service.LastUpdateTime = command.createTime
 	}
@@ -176,7 +155,7 @@ func (service *ProfileTaskService) HandleCommand(rawCommand *commonv3.Command) e
 	startTime := time.Duration(command.startTime-time.Now().UnixMilli()) * time.Millisecond
 
 	// The CPU sampling lasts for a duration and then stops
-	if command.profileType == ProfileTypeCPU {
+	if command.profileType == PprofTypeCPU {
 		time.AfterFunc(startTime, func() {
 			_, err := service.startTask(command)
 			if err != nil {
@@ -202,8 +181,8 @@ func (service *ProfileTaskService) HandleCommand(rawCommand *commonv3.Command) e
 	return nil
 }
 
-func (service *ProfileTaskService) startTask(command *ProfileTaskCommand) (*os.File, error) {
-	fileName := service.getProfileFileName(command.profileType)
+func (service *PprofTaskService) startTask(command *PprofTaskCommand) (*os.File, error) {
+	fileName := service.getPprofFileName(command.profileType)
 	var f *os.File
 	var err error
 
@@ -216,66 +195,66 @@ func (service *ProfileTaskService) startTask(command *ProfileTaskCommand) (*os.F
 		return nil, err
 	}
 
-	service.activeProfileFiles[command.taskId] = f
+	service.activePprofFiles[command.taskId] = f
 
 	switch command.profileType {
-	case ProfileTypeCPU:
+	case PprofTypeCPU:
 		runtime.SetCPUProfileRate(command.dumpPeriod)
 		if err = pprof.StartCPUProfile(f); err != nil {
 			f.Close()
-			delete(service.activeProfileFiles, command.taskId)
+			delete(service.activePprofFiles, command.taskId)
 			return nil, err
 		}
 		service.logger.Infof("CPU profiling task started for %s", command.taskId)
-	case ProfileTypeMemory:
+	case PprofTypeMemory:
 		service.logger.Infof("Memory profiling task started for %s", command.taskId)
-	case ProfileTypeBlock:
+	case PprofTypeBlock:
 		runtime.SetBlockProfileRate(command.dumpPeriod)
 		service.logger.Infof("Block profiling task started for %s", command.taskId)
-	case ProfileTypeMutex:
+	case PprofTypeMutex:
 		runtime.SetMutexProfileFraction(command.dumpPeriod)
 		service.logger.Infof("Mutex profiling task started for %s", command.taskId)
 	default:
 		f.Close()
-		delete(service.activeProfileFiles, command.taskId)
+		delete(service.activePprofFiles, command.taskId)
 		return nil, fmt.Errorf("unsupported profile type: %s", command.profileType)
 	}
 
 	return f, nil
 }
 
-func (service *ProfileTaskService) getProfileFileName(profileType string) string {
+func (service *PprofTaskService) getPprofFileName(profileType string) string {
 	switch profileType {
-	case ProfileTypeCPU:
-		return CPUProfileFileName
-	case ProfileTypeMemory:
-		return MemoryProfileFileName
-	case ProfileTypeBlock:
-		return BlockProfileFileName
-	case ProfileTypeMutex:
-		return MutexProfileFileName
+	case PprofTypeCPU:
+		return CPUPprofFileName
+	case PprofTypeMemory:
+		return MemoryPprofFileName
+	case PprofTypeBlock:
+		return BlockPprofFileName
+	case PprofTypeMutex:
+		return MutexPprofFileName
 	default:
-		return CPUProfileFileName
+		return CPUPprofFileName
 	}
 }
 
-func (service *ProfileTaskService) stopTask(taskId string, profileType string) {
-	file, exists := service.activeProfileFiles[taskId]
+func (service *PprofTaskService) stopTask(taskId string, profileType string) {
+	file, exists := service.activePprofFiles[taskId]
 	if !exists {
-		service.logger.Errorf("Profile task file not found for taskId: %s", taskId)
+		service.logger.Errorf("Pprof task file not found for taskId: %s", taskId)
 		return
 	}
 
-	delete(service.activeProfileFiles, taskId)
+	delete(service.activePprofFiles, taskId)
 	filePath := file.Name()
 
 	switch profileType {
-	case ProfileTypeCPU:
+	case PprofTypeCPU:
 		pprof.StopCPUProfile()
 		if err := file.Close(); err != nil {
 			service.logger.Errorf("close CPU profile file error %v \n", err)
 		}
-	case ProfileTypeMemory:
+	case PprofTypeMemory:
 		runtime.GC()
 		if err := pprof.WriteHeapProfile(file); err != nil {
 			service.logger.Errorf("write memory profile error %v \n", err)
@@ -283,7 +262,7 @@ func (service *ProfileTaskService) stopTask(taskId string, profileType string) {
 		if err := file.Close(); err != nil {
 			service.logger.Errorf("close memory profile file error %v \n", err)
 		}
-	case ProfileTypeBlock:
+	case PprofTypeBlock:
 		profile := pprof.Lookup("block")
 		if profile != nil {
 			if err := profile.WriteTo(file, 0); err != nil {
@@ -294,7 +273,7 @@ func (service *ProfileTaskService) stopTask(taskId string, profileType string) {
 			service.logger.Errorf("close block profile file error %v \n", err)
 		}
 		runtime.SetBlockProfileRate(0)
-	case ProfileTypeMutex:
+	case PprofTypeMutex:
 		profile := pprof.Lookup("mutex")
 		if profile != nil {
 			if err := profile.WriteTo(file, 0); err != nil {
@@ -313,29 +292,29 @@ func (service *ProfileTaskService) stopTask(taskId string, profileType string) {
 		return
 	}
 
-	service.logger.Infof("Profile task completed for taskId: %s, type: %s", taskId, profileType)
+	service.logger.Infof("Pprof task completed for taskId: %s, type: %s", taskId, profileType)
 
 	service.readPprofData(taskId, profileType, filePath)
 }
 
-func (service *ProfileTaskService) readPprofData(taskId, profileType, filePath string) {
+func (service *PprofTaskService) readPprofData(taskId, profileType, filePath string) {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		service.logger.Errorf("read pprof file error: %v", err)
 		return
 	}
-	// nolint:unparam
-	pprofData := &profilev3.PprofData{
-		PprofMetaData: &profilev3.PprofMetaData{
+	pprofData := &pprofv10.PprofData{
+		MetaData: &pprofv10.PprofMetaData{
 			Service:         service.entity.ServiceName,
 			ServiceInstance: service.entity.ServiceInstanceName,
 			TaskId:          taskId,
-			Status:          profilev3.PprofExecutionStatus_PROFILING_SUCCESS,
+			Type:            pprofv10.PprofProfilingStatus_PROFILING_SUCCESS,
 			ContentSize:     int32(len(content)),
 		},
-		Result: &profilev3.PprofData_Content{
+		Result: &pprofv10.PprofData_Content{
 			Content: content,
 		},
 	}
+	_ = pprofData
 
 }
