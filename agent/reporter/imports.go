@@ -30,6 +30,7 @@ import (
 	_ "runtime/pprof"
 	_ "strconv"
 	_ "strings"
+	_ "sync"
 	_ "time"
 
 	// imports the logs for reporter

@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/apache/skywalking-go/plugins/core/operator"
@@ -14,7 +15,6 @@ import (
 )
 
 // PprofReporter interface for sending pprof data
-// This interface is implemented by Tracer to maintain architectural consistency
 type PprofReporter interface {
 	ReportPprof(taskId, filePath string)
 }
@@ -201,7 +201,7 @@ type PprofTaskService struct {
 	pprofFilePath  string
 	LastUpdateTime int64
 
-	activePprofFiles map[string]*os.File
+	activePprofFiles sync.Map
 	reporter         PprofReporter
 }
 
@@ -209,7 +209,7 @@ func NewPprofTaskService(logger operator.LogOperator, profileFilePath string, re
 	return &PprofTaskService{
 		logger:           logger,
 		pprofFilePath:    profileFilePath,
-		activePprofFiles: make(map[string]*os.File),
+		activePprofFiles: sync.Map{},
 		reporter:         reporter,
 	}
 }
@@ -229,7 +229,7 @@ func (service *PprofTaskService) HandleCommand(rawCommand *commonv3.Command) err
 	if command.profileType == PprofTypeMemory {
 		// direct sampling of Memory
 		time.AfterFunc(startTime, func() {
-			_, err := service.startTask(command)
+			err := service.startTask(command)
 			if err != nil {
 				service.logger.Errorf("start %s pprof error %v \n", command.profileType, err)
 				return
@@ -240,7 +240,7 @@ func (service *PprofTaskService) HandleCommand(rawCommand *commonv3.Command) err
 	} else {
 		// The CPU, Block, and Mutex sampling lasts for a duration and then stops
 		time.AfterFunc(startTime, func() {
-			_, err := service.startTask(command)
+			err := service.startTask(command)
 			if err != nil {
 				service.logger.Errorf("start CPU pprof error %v \n", err)
 				return
@@ -254,7 +254,7 @@ func (service *PprofTaskService) HandleCommand(rawCommand *commonv3.Command) err
 	return nil
 }
 
-func (service *PprofTaskService) startTask(command *PprofTaskCommand) (*os.File, error) {
+func (service *PprofTaskService) startTask(command *PprofTaskCommand) error {
 	fileName := service.getPprofFileName(command.profileType)
 	var f *os.File
 	var err error
@@ -265,18 +265,22 @@ func (service *PprofTaskService) startTask(command *PprofTaskCommand) (*os.File,
 		f, err = os.Create(filepath.Join(service.pprofFilePath, fileName))
 	}
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	service.activePprofFiles[command.taskId] = f
+	cleanup := func() {
+		f.Close()
+		service.activePprofFiles.Delete(command.taskId)
+	}
+
+	service.activePprofFiles.Store(command.taskId, f)
 
 	switch command.profileType {
 	case PprofTypeCPU:
 		runtime.SetCPUProfileRate(command.dumpPeriod)
 		if err = pprof.StartCPUProfile(f); err != nil {
-			f.Close()
-			delete(service.activePprofFiles, command.taskId)
-			return nil, err
+			cleanup()
+			return err
 		}
 		service.logger.Infof("CPU profiling task started for %s", command.taskId)
 	case PprofTypeMemory:
@@ -288,12 +292,11 @@ func (service *PprofTaskService) startTask(command *PprofTaskCommand) (*os.File,
 		runtime.SetMutexProfileFraction(command.dumpPeriod)
 		service.logger.Infof("Mutex profiling task started for %s", command.taskId)
 	default:
-		f.Close()
-		delete(service.activePprofFiles, command.taskId)
-		return nil, fmt.Errorf("unsupported profile type: %s", command.profileType)
+		cleanup()
+		return fmt.Errorf("unsupported profile type: %s", command.profileType)
 	}
 
-	return f, nil
+	return nil
 }
 
 func (service *PprofTaskService) getPprofFileName(profileType string) string {
@@ -312,69 +315,60 @@ func (service *PprofTaskService) getPprofFileName(profileType string) string {
 }
 
 func (service *PprofTaskService) stopTask(taskId string, profileType string) {
-	file, exists := service.activePprofFiles[taskId]
+	fileValue, exists := service.activePprofFiles.Load(taskId)
 	if !exists {
 		service.logger.Errorf("Pprof task file not found for taskId: %s", taskId)
 		return
 	}
+	file := fileValue.(*os.File)
 
-	delete(service.activePprofFiles, taskId)
+	service.activePprofFiles.Delete(taskId)
 	filePath := file.Name()
+
+	closeFile := func() {
+		if err := file.Close(); err != nil {
+			service.logger.Errorf("close %s profile file error %v", profileType, err)
+		}
+	}
 
 	switch profileType {
 	case PprofTypeCPU:
 		pprof.StopCPUProfile()
-		if err := file.Close(); err != nil {
-			service.logger.Errorf("close CPU profile file error %v \n", err)
-		}
+		closeFile()
 	case PprofTypeMemory:
 		runtime.GC()
 		if err := pprof.WriteHeapProfile(file); err != nil {
-			service.logger.Errorf("write memory profile error %v \n", err)
+			service.logger.Errorf("write memory profile error %v", err)
 		}
-		if err := file.Close(); err != nil {
-			service.logger.Errorf("close memory profile file error %v \n", err)
-		}
+		closeFile()
 	case PprofTypeBlock:
-		profile := pprof.Lookup("block")
-		if profile != nil {
+		if profile := pprof.Lookup("block"); profile != nil {
 			if err := profile.WriteTo(file, 0); err != nil {
-				service.logger.Errorf("write block profile error %v \n", err)
+				service.logger.Errorf("write block profile error %v", err)
 			}
 		}
-		if err := file.Close(); err != nil {
-			service.logger.Errorf("close block profile file error %v \n", err)
-		}
+		closeFile()
 		runtime.SetBlockProfileRate(0)
 	case PprofTypeMutex:
-		profile := pprof.Lookup("mutex")
-		if profile != nil {
+		if profile := pprof.Lookup("mutex"); profile != nil {
 			if err := profile.WriteTo(file, 0); err != nil {
-				service.logger.Errorf("write mutex profile error %v \n", err)
+				service.logger.Errorf("write mutex profile error %v", err)
 			}
 		}
-		if err := file.Close(); err != nil {
-			service.logger.Errorf("close mutex profile file error %v \n", err)
-		}
+		closeFile()
 		runtime.SetMutexProfileFraction(0)
 	default:
 		service.logger.Errorf("unsupported profile type: %s", profileType)
-		if err := file.Close(); err != nil {
-			service.logger.Errorf("close profile file error %v \n", err)
-		}
+		closeFile()
 		return
 	}
 
 	service.logger.Infof("Pprof task completed for taskId: %s, type: %s", taskId, profileType)
 
-	if reporter := service.getReporter(); reporter != nil {
-		reporter.ReportPprof(taskId, filePath)
+	if service.reporter != nil {
+		service.reporter.ReportPprof(taskId, filePath)
 		service.logger.Infof("Pprof task completed and data sent for taskId: %s", taskId)
 	} else {
 		service.logger.Errorf("Reporter not available for sending pprof data")
 	}
-}
-
-func (service *PprofTaskService) getReporter() PprofReporter {
-	return service.reporter
 }

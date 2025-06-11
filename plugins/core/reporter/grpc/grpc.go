@@ -295,21 +295,18 @@ func (r *gRPCReporter) SendPprof(pprofData *pprofv10.PprofData) {
 	}
 }
 
-// ReportPprof reads pprof file and sends data through gRPC, managed entirely by gRPCReporter
 func (r *gRPCReporter) ReportPprof(taskId, filePath string) {
 	if r.entity == nil {
 		r.logger.Errorf("Service entity not available for pprof reporting")
 		return
 	}
 
-	// Read pprof file content
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		r.logger.Errorf("read pprof file error: %v", err)
 		return
 	}
 
-	// Construct pprof data structure
 	pprofData := &pprofv10.PprofData{
 		MetaData: &pprofv10.PprofMetaData{
 			Service:         r.entity.ServiceName,
@@ -323,12 +320,10 @@ func (r *gRPCReporter) ReportPprof(taskId, filePath string) {
 		},
 	}
 
-	// Send pprof data through gRPC
 	r.SendPprof(pprofData)
 	r.logger.Infof("Sent pprof data successfully: taskId=%s, size=%d bytes",
 		pprofData.MetaData.TaskId, pprofData.MetaData.ContentSize)
 
-	// Clean up the file after sending
 	if err := os.Remove(filePath); err != nil {
 		r.logger.Errorf("failed to remove pprof file %s: %v", filePath, err)
 	}
@@ -494,6 +489,8 @@ func (r *gRPCReporter) initSendPipeline() {
 					continue StreamLoop
 				}
 			}
+			r.closePprofStream(stream)
+			break
 		}
 	}()
 }
