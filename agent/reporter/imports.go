@@ -65,6 +65,7 @@ import (
 	_ "skywalking.apache.org/repo/goapi/collect/ebpf/profiling/v3"
 	_ "skywalking.apache.org/repo/goapi/collect/event/v3"
 	_ "skywalking.apache.org/repo/goapi/collect/language/agent/v3"
+	_ "skywalking.apache.org/repo/goapi/collect/language/pprof/v10"
 	_ "skywalking.apache.org/repo/goapi/collect/language/profile/v3"
 	_ "skywalking.apache.org/repo/goapi/collect/logging/v3"
 	_ "skywalking.apache.org/repo/goapi/collect/management/v3"

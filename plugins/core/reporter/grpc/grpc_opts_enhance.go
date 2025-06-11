@@ -124,15 +124,15 @@ func checkTLSFile(path string) error {
 	return nil
 }
 
-// WithProfilerInterval setup profiler collection interval
-func WithProfilerInterval(interval time.Duration) ReporterOption {
+// WithPporfInterval setup profiler collection interval
+func WithPprofInterval(interval time.Duration) ReporterOption {
 	return func(r *gRPCReporter) {
 		r.pprofInterval = interval
 	}
 }
 
-// WithProfilerFilePath setup profiler file path
-func WithProfilerFilePath(filePath string) ReporterOption {
+// WithPporfFilePath setup profiler file path
+func WithPprofFilePath(filePath string) ReporterOption {
 	return func(r *gRPCReporter) {
 		r.pprofFilePath = filePath
 	}

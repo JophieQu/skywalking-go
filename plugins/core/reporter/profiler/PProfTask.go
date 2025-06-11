@@ -10,10 +10,14 @@ import (
 	"time"
 
 	"github.com/apache/skywalking-go/plugins/core/operator"
-	"github.com/apache/skywalking-go/plugins/core/reporter"
 	commonv3 "skywalking.apache.org/repo/goapi/collect/common/v3"
-	pprofv10 "skywalking.apache.org/repo/goapi/collect/language/pprof/v10"
 )
+
+// PprofReporter interface for sending pprof data
+// This interface is implemented by Tracer to maintain architectural consistency
+type PprofReporter interface {
+	ReportPprof(taskId, filePath string)
+}
 
 const (
 	// Name of the pprof task query command
@@ -22,8 +26,34 @@ const (
 	TaskDurationMinMinute = 1 * time.Minute
 	// TaskDurationMaxMinute The duration of the monitoring task cannot be greater than 15 minutes
 	TaskDurationMaxMinute = 15 * time.Minute
-	// Maximum rate for profile data dumping, measured in Hz (samples per second)
-	TaskDumpPeriodMaxRate = 100
+)
+
+// CPU profiling rate constants (hz)
+const (
+	CPUDumpPeriodDefault = 100
+	CPUDumpPeriodMin     = 10
+	CPUDumpPeriodMax     = 1000
+)
+
+// Memory profiling rate constants (KB)
+const (
+	MemoryDumpPeriodDefault = 64
+	MemoryDumpPeriodMin     = 64
+	MemoryDumpPeriodMax     = 1024
+)
+
+// Block profiling rate constants
+const (
+	BlockDumpPeriodDefault = 0
+	BlockDumpPeriodMin     = 1
+	BlockDumpPeriodMax     = 100
+)
+
+// Mutex profiling rate constants
+const (
+	MutexDumpPeriodDefault = 0
+	MutexDumpPeriodMin     = 1
+	MutexDumpPeriodMax     = 100
 )
 
 // Pprof types
@@ -54,7 +84,9 @@ type PprofTaskCommand struct {
 	startTime int64
 	// Unix timestamp in milliseconds when the task was created
 	createTime int64
-	// unit is hz
+	// Original dump period value for validation
+	originalDumpPeriod int
+	// Processed dump period (unit is hz for CPU, converted for internal use)
 	dumpPeriod int
 }
 
@@ -72,8 +104,25 @@ func (c *PprofTaskCommand) CheckCommand() error {
 	if c.duration > TaskDurationMaxMinute {
 		return fmt.Errorf("monitor duration must less than %v", TaskDurationMaxMinute)
 	}
-	if c.dumpPeriod > TaskDumpPeriodMaxRate {
-		return fmt.Errorf("dump period must be less than or equals %v hz", TaskDumpPeriodMaxRate)
+
+	// Validate dump period based on profile type
+	switch c.profileType {
+	case PprofTypeCPU:
+		if c.originalDumpPeriod < CPUDumpPeriodMin || c.originalDumpPeriod > CPUDumpPeriodMax {
+			return fmt.Errorf("CPU dump period must be between %d and %d hz", CPUDumpPeriodMin, CPUDumpPeriodMax)
+		}
+	case PprofTypeMemory:
+		if c.originalDumpPeriod < MemoryDumpPeriodMin || c.originalDumpPeriod > MemoryDumpPeriodMax {
+			return fmt.Errorf("Memory dump period must be between %d and %d KB", MemoryDumpPeriodMin, MemoryDumpPeriodMax)
+		}
+	case PprofTypeBlock:
+		if c.originalDumpPeriod < BlockDumpPeriodMin || c.originalDumpPeriod > BlockDumpPeriodMax {
+			return fmt.Errorf("Block dump period must be between %d and %d", BlockDumpPeriodMin, BlockDumpPeriodMax)
+		}
+	case PprofTypeMutex:
+		if c.originalDumpPeriod < MutexDumpPeriodMin || c.originalDumpPeriod > MutexDumpPeriodMax {
+			return fmt.Errorf("Mutex dump period must be between %d and %d", MutexDumpPeriodMin, MutexDumpPeriodMax)
+		}
 	}
 	return nil
 }
@@ -84,7 +133,7 @@ func deserializePprofTaskCommand(command *commonv3.Command) *PprofTaskCommand {
 	serialNumber := ""
 	profileType := PprofTypeCPU
 	duration := 0
-	dumpPeriod := 100
+	dumpPeriod := -1 // Use -1 to indicate no explicit value provided
 	var startTime int64 = 0
 	var createTime int64 = 0
 	for _, pair := range args {
@@ -99,7 +148,7 @@ func deserializePprofTaskCommand(command *commonv3.Command) *PprofTaskCommand {
 				duration = val
 			}
 		} else if pair.GetKey() == "DumpPeriod" {
-			if val, err := strconv.Atoi(pair.GetValue()); err == nil && val > 0 {
+			if val, err := strconv.Atoi(pair.GetValue()); err == nil && val >= 0 {
 				dumpPeriod = val
 			}
 		} else if pair.GetKey() == "StartTime" {
@@ -109,36 +158,59 @@ func deserializePprofTaskCommand(command *commonv3.Command) *PprofTaskCommand {
 		}
 	}
 
+	// Set default dump period based on profile type if not provided
+	if dumpPeriod == -1 {
+		switch profileType {
+		case PprofTypeCPU:
+			dumpPeriod = CPUDumpPeriodDefault
+		case PprofTypeMemory:
+			dumpPeriod = MemoryDumpPeriodDefault
+		case PprofTypeBlock:
+			dumpPeriod = BlockDumpPeriodDefault
+		case PprofTypeMutex:
+			dumpPeriod = MutexDumpPeriodDefault
+		default:
+			dumpPeriod = CPUDumpPeriodDefault
+		}
+	}
+
+	// Convert dump period for CPU profiling (hz to nanoseconds per sample)
+	finalDumpPeriod := dumpPeriod
+	if profileType == PprofTypeCPU {
+		finalDumpPeriod = 1000 / dumpPeriod
+	}
+
 	return &PprofTaskCommand{
 		BaseCommand: BaseCommand{
 			SerialNumber: serialNumber,
 			Command:      PprofTaskCommandName,
 		},
-		taskId:      taskId,
-		profileType: profileType,
-		duration:    time.Duration(duration) * time.Minute,
-		dumpPeriod:  1000 / dumpPeriod,
-		startTime:   startTime,
-		createTime:  createTime,
+		taskId:             taskId,
+		profileType:        profileType,
+		duration:           time.Duration(duration) * time.Minute,
+		originalDumpPeriod: dumpPeriod,
+		dumpPeriod:         finalDumpPeriod,
+		startTime:          startTime,
+		createTime:         createTime,
 	}
 }
 
 type PprofTaskService struct {
 	logger operator.LogOperator
-	entity *reporter.Entity
 
 	pprofFilePath  string
 	LastUpdateTime int64
 
 	activePprofFiles map[string]*os.File
+	reporter         PprofReporter
 }
 
-func NewPprofTaskService(logger operator.LogOperator, entity *reporter.Entity, profileFilePath string) *PprofTaskService {
+func NewPprofTaskService(logger operator.LogOperator, profileFilePath string, reporter PprofReporter) *PprofTaskService {
 	return &PprofTaskService{
 		logger:           logger,
-		entity:           entity,
 		pprofFilePath:    profileFilePath,
 		activePprofFiles: make(map[string]*os.File),
+		reporter:         reporter,
 	}
 }
 
@@ -154,8 +226,19 @@ func (service *PprofTaskService) HandleCommand(rawCommand *commonv3.Command) err
 
 	startTime := time.Duration(command.startTime-time.Now().UnixMilli()) * time.Millisecond
 
-	// The CPU sampling lasts for a duration and then stops
-	if command.profileType == PprofTypeCPU {
+	if command.profileType == PprofTypeMemory {
+		// direct sampling of Memory
+		time.AfterFunc(startTime, func() {
+			_, err := service.startTask(command)
+			if err != nil {
+				service.logger.Errorf("start %s pprof error %v \n", command.profileType, err)
+				return
+			}
+			service.stopTask(command.taskId, command.profileType)
+		})
+
+	} else {
+		// The CPU, Block, and Mutex sampling lasts for a duration and then stops
 		time.AfterFunc(startTime, func() {
 			_, err := service.startTask(command)
 			if err != nil {
@@ -165,16 +248,6 @@ func (service *PprofTaskService) HandleCommand(rawCommand *commonv3.Command) err
 			time.AfterFunc(command.duration, func() {
 				service.stopTask(command.taskId, command.profileType)
 			})
-		})
-	} else {
-		// direct sampling of Memory, Block, and Mutex types
-		time.AfterFunc(startTime, func() {
-			_, err := service.startTask(command)
-			if err != nil {
-				service.logger.Errorf("start %s pprof error %v \n", command.profileType, err)
-				return
-			}
-			service.stopTask(command.taskId, command.profileType)
 		})
 	}
 
@@ -294,27 +367,14 @@ func (service *PprofTaskService) stopTask(taskId string, profileType string) {
 
 	service.logger.Infof("Pprof task completed for taskId: %s, type: %s", taskId, profileType)
 
-	service.readPprofData(taskId, profileType, filePath)
+	if reporter := service.getReporter(); reporter != nil {
+		reporter.ReportPprof(taskId, filePath)
+		service.logger.Infof("Pprof task completed and data sent for taskId: %s", taskId)
+	} else {
+		service.logger.Errorf("Reporter not available for sending pprof data")
+	}
 }
 
-func (service *PprofTaskService) readPprofData(taskId, profileType, filePath string) {
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		service.logger.Errorf("read pprof file error: %v", err)
-		return
-	}
-	pprofData := &pprofv10.PprofData{
-		MetaData: &pprofv10.PprofMetaData{
-			Service:         service.entity.ServiceName,
-			ServiceInstance: service.entity.ServiceInstanceName,
-			TaskId:          taskId,
-			Type:            pprofv10.PprofProfilingStatus_PROFILING_SUCCESS,
-			ContentSize:     int32(len(content)),
-		},
-		Result: &pprofv10.PprofData_Content{
-			Content: content,
-		},
-	}
-	_ = pprofData
-
+func (service *PprofTaskService) getReporter() PprofReporter {
+	return service.reporter
 }

@@ -20,6 +20,7 @@ package reporter
 import (
 	commonv3 "skywalking.apache.org/repo/goapi/collect/common/v3"
 	agentv3 "skywalking.apache.org/repo/goapi/collect/language/agent/v3"
+	pprofv10 "skywalking.apache.org/repo/goapi/collect/language/pprof/v10"
 	logv3 "skywalking.apache.org/repo/goapi/collect/logging/v3"
 )
 
@@ -113,6 +114,7 @@ type Reporter interface {
 	SendTracing(spans []ReportedSpan)
 	SendMetrics(metrics []ReportedMeter)
 	SendLog(log *logv3.LogData)
+	SendPprof(pprof *pprofv10.PprofData)
 	ConnectionStatus() ConnectionStatus
 	Close()
 }

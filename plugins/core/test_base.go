@@ -23,6 +23,7 @@ import (
 	"github.com/apache/skywalking-go/plugins/core/operator"
 	"github.com/apache/skywalking-go/plugins/core/reporter"
 
+	pprofv10 "skywalking.apache.org/repo/goapi/collect/language/pprof/v10"
 	logv3 "skywalking.apache.org/repo/goapi/collect/logging/v3"
 )
 
@@ -69,6 +70,7 @@ type StoreReporter struct {
 	Spans   []reporter.ReportedSpan
 	Metrics []reporter.ReportedMeter
 	Logs    []*logv3.LogData
+	Pprofs  []*pprofv10.PprofData
 }
 
 func NewStoreReporter() *StoreReporter {
@@ -88,6 +90,10 @@ func (r *StoreReporter) SendMetrics(metrics []reporter.ReportedMeter) {
 
 func (r *StoreReporter) SendLog(log *logv3.LogData) {
 	r.Logs = append(r.Logs, log)
+}
+
+func (r *StoreReporter) SendPprof(pprof *pprofv10.PprofData) {
+	r.Pprofs = append(r.Pprofs, pprof)
 }
 
 func (r *StoreReporter) ConnectionStatus() reporter.ConnectionStatus {

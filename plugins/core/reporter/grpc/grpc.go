@@ -20,6 +20,7 @@ package grpc
 import (
 	"context"
 	"io"
+	"os"
 	"time"
 
 	profiler "github.com/apache/skywalking-go/plugins/core/reporter/profiler"
@@ -56,6 +57,7 @@ func NewGRPCReporter(logger operator.LogOperator, serverAddr string, opts ...Rep
 		tracingSendCh:    make(chan *agentv3.SegmentObject, maxSendQueueSize),
 		metricsSendCh:    make(chan []*agentv3.MeterData, maxSendQueueSize),
 		logSendCh:        make(chan *logv3.LogData, maxSendQueueSize),
+		pprofSendCh:      make(chan *pprofv10.PprofData, maxSendQueueSize),
 		checkInterval:    defaultCheckInterval,
 		cdsInterval:      defaultCDSInterval,     // cds default on
 		pprofInterval:    defaultProfileInterval, // pprof default on
@@ -94,6 +96,10 @@ func NewGRPCReporter(logger operator.LogOperator, serverAddr string, opts ...Rep
 		r.cdsClient = configuration.NewConfigurationDiscoveryServiceClient(r.conn)
 		r.cdsService = reporter.NewConfigDiscoveryService()
 	}
+	if r.pprofInterval > 0 {
+		r.pprofClient = pprofv10.NewPprofTaskClient(r.conn)
+		r.pprofTaskService = profiler.NewPprofTaskService(r.logger, r.pprofFilePath, r)
+	}
 	return r, nil
 }
 
@@ -118,6 +124,7 @@ type gRPCReporter struct {
 	pprofTaskService *profiler.PprofTaskService
 	pprofInterval    time.Duration
 	pprofFilePath    string
+	pprofSendCh      chan *pprofv10.PprofData
 
 	md    metadata.MD
 	creds credentials.TransportCredentials
@@ -275,6 +282,58 @@ func (r *gRPCReporter) SendLog(log *logv3.LogData) {
 	}
 }
 
+func (r *gRPCReporter) SendPprof(pprofData *pprofv10.PprofData) {
+	defer func() {
+		if err := recover(); err != nil {
+			r.logger.Errorf("reporter pprof err %v", err)
+		}
+	}()
+	select {
+	case r.pprofSendCh <- pprofData:
+	default:
+		r.logger.Errorf("reach max pprof send buffer")
+	}
+}
+
+// ReportPprof reads pprof file and sends data through gRPC, managed entirely by gRPCReporter
+func (r *gRPCReporter) ReportPprof(taskId, filePath string) {
+	if r.entity == nil {
+		r.logger.Errorf("Service entity not available for pprof reporting")
+		return
+	}
+
+	// Read pprof file content
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		r.logger.Errorf("read pprof file error: %v", err)
+		return
+	}
+
+	// Construct pprof data structure
+	pprofData := &pprofv10.PprofData{
+		MetaData: &pprofv10.PprofMetaData{
+			Service:         r.entity.ServiceName,
+			ServiceInstance: r.entity.ServiceInstanceName,
+			TaskId:          taskId,
+			Type:            pprofv10.PprofProfilingStatus_PROFILING_SUCCESS,
+			ContentSize:     int32(len(content)),
+		},
+		Result: &pprofv10.PprofData_Content{
+			Content: content,
+		},
+	}
+
+	// Send pprof data through gRPC
+	r.SendPprof(pprofData)
+	r.logger.Infof("Sent pprof data successfully: taskId=%s, size=%d bytes",
+		pprofData.MetaData.TaskId, pprofData.MetaData.ContentSize)
+
+	// Clean up the file after sending
+	if err := os.Remove(filePath); err != nil {
+		r.logger.Errorf("failed to remove pprof file %s: %v", filePath, err)
+	}
+}
+
 func (r *gRPCReporter) convertLabels(labels map[string]string) []*agentv3.Label {
 	if len(labels) == 0 {
 		return nil
@@ -296,6 +355,12 @@ func (r *gRPCReporter) Close() {
 		}
 		if r.metricsSendCh != nil {
 			close(r.metricsSendCh)
+		}
+		if r.logSendCh != nil {
+			close(r.logSendCh)
+		}
+		if r.pprofSendCh != nil {
+			close(r.pprofSendCh)
 		}
 	} else {
 		r.closeGRPCConn()
@@ -405,6 +470,32 @@ func (r *gRPCReporter) initSendPipeline() {
 			break
 		}
 	}()
+	go func() {
+	StreamLoop:
+		for {
+			switch r.updateConnectionStatus() {
+			case reporter.ConnectionStatusShutdown:
+				break
+			case reporter.ConnectionStatusDisconnect:
+				time.Sleep(5 * time.Second)
+				continue StreamLoop
+			}
+			stream, err := r.pprofClient.Collect(metadata.NewOutgoingContext(context.Background(), r.md))
+			if err != nil {
+				r.logger.Errorf("open stream error %v", err)
+				time.Sleep(5 * time.Second)
+				continue StreamLoop
+			}
+			for s := range r.pprofSendCh {
+				err = stream.Send(s)
+				if err != nil {
+					r.logger.Errorf("send pprof data error %v", err)
+					r.closePprofStream(stream)
+					continue StreamLoop
+				}
+			}
+		}
+	}()
 }
 
 func (r *gRPCReporter) updateConnectionStatus() reporter.ConnectionStatus {
@@ -481,6 +572,13 @@ func (r *gRPCReporter) closeLogStream(stream logv3.LogReportService_CollectClien
 	}
 }
 
+func (r *gRPCReporter) closePprofStream(stream pprofv10.PprofTask_CollectClient) {
+	_, err := stream.CloseAndRecv()
+	if err != nil && err != io.EOF {
+		r.logger.Errorf("send closing error %v", err)
+	}
+}
+
 func (r *gRPCReporter) reportInstanceProperties() (err error) {
 	_, err = r.managementClient.ReportInstanceProperties(metadata.NewOutgoingContext(context.Background(), r.md), &managementv3.InstanceProperties{
 		Service:         r.entity.ServiceName,
@@ -529,10 +627,9 @@ func (r *gRPCReporter) check() {
 }
 
 func (r *gRPCReporter) initPprofTask() {
-	if r.pprofClient == nil {
+	if r.pprofClient == nil || r.pprofTaskService == nil {
 		return
 	}
-	r.pprofTaskService = profiler.NewPprofTaskService(r.logger, r.entity, r.pprofFilePath)
 	go func() {
 		for {
 			switch r.updateConnectionStatus() {

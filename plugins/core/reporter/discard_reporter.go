@@ -17,7 +17,10 @@
 
 package reporter
 
-import logv3 "skywalking.apache.org/repo/goapi/collect/logging/v3"
+import (
+	pprofv10 "skywalking.apache.org/repo/goapi/collect/language/pprof/v10"
+	logv3 "skywalking.apache.org/repo/goapi/collect/logging/v3"
+)
 
 type discardReporter struct{}
 
@@ -35,6 +38,9 @@ func (r *discardReporter) SendMetrics(metrics []ReportedMeter) {
 	// do nothing
 }
 func (r *discardReporter) SendLog(log *logv3.LogData) {
+	// do nothing
+}
+func (r *discardReporter) SendPprof(pprof *pprofv10.PprofData) {
 	// do nothing
 }
 func (r *discardReporter) ConnectionStatus() ConnectionStatus {
