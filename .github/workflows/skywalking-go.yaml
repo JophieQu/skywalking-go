@@ -17,6 +17,9 @@
 name: CI
 
 on:
+  push:
+    branches:
+      - ci1
   pull_request:
 
 jobs:

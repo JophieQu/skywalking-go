@@ -20,6 +20,7 @@ on:
   push:
     branches:
       - main
+      - ci1
 
 env:
   HUB: ghcr.io/apache/skywalking-go
