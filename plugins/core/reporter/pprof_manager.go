@@ -145,7 +145,7 @@ func (r *PprofTaskManager) HandleCommand(rawCommand *commonv3.Command) {
 		if err != nil {
 			err = fmt.Errorf("start %s pprof task error %v", command.GetTaskID(), err)
 			r.ReportPprofError(command.GetTaskID(), err)
-			r.logger.Errorf(err.Error())
+			r.logger.Error(err.Error())
 			return
 		}
 		command.StopTask(writer)
@@ -155,7 +155,7 @@ func (r *PprofTaskManager) HandleCommand(rawCommand *commonv3.Command) {
 		if err != nil {
 			err = fmt.Errorf("start %s pprof task error %v", command.GetTaskID(), err)
 			r.ReportPprofError(command.GetTaskID(), err)
-			r.logger.Errorf(err.Error())
+			r.logger.Error(err.Error())
 			return
 		}
 		time.AfterFunc(command.GetDuration(), func() {
